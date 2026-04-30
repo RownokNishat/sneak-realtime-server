@@ -10,9 +10,24 @@ if (!REDIS_URL) {
 
 console.log("🔌 Connecting to Redis...");
 
-// Create Bull queues - let Bull manage Redis connections
-// DO NOT use createClient or pre-create Redis instances
+// Redis connection options for Upstash/TLS support
+const redisOptions = {
+  maxRetriesPerRequest: null,
+  enableReadyCheck: false,
+  enableOfflineQueue: true,
+  retryStrategy: (times) => Math.min(times * 50, 2000),
+  reconnectOnError: (err) => {
+    const targetError = "READONLY";
+    if (err.message.includes(targetError)) {
+      return true;
+    }
+    return false;
+  },
+};
+
+// Create Bull queues with proper Redis configuration
 const reservationQueue = new Bull("reservation-queue", REDIS_URL, {
+  ...redisOptions,
   settings: {
     lockDuration: 30000,
     lockRenewTime: 15000,
@@ -29,6 +44,7 @@ const reservationQueue = new Bull("reservation-queue", REDIS_URL, {
 });
 
 const expiryQueue = new Bull("expiry-queue", REDIS_URL, {
+  ...redisOptions,
   settings: {
     lockDuration: 30000,
     lockRenewTime: 15000,
