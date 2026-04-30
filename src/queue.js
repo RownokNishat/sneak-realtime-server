@@ -40,8 +40,12 @@ const expiryQueue = new Bull("expiry-queue", REDIS_URL, {
 });
 
 // Connection events
-reservationQueue.on("connected", () => console.log("✅ Reservation queue connected"));
-reservationQueue.on("error", (err) => console.error("❌ Reservation queue error:", err));
+reservationQueue.on("connected", () =>
+  console.log("✅ Reservation queue connected"),
+);
+reservationQueue.on("error", (err) =>
+  console.error("❌ Reservation queue error:", err),
+);
 expiryQueue.on("connected", () => console.log("✅ Expiry queue connected"));
 expiryQueue.on("error", (err) => console.error("❌ Expiry queue error:", err));
 
@@ -60,4 +64,3 @@ async function cleanOldJobs() {
 setTimeout(cleanOldJobs, 5000);
 
 module.exports = { reservationQueue, expiryQueue };
-
