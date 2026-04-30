@@ -126,11 +126,29 @@ app.get("/api/drops/:dropId/purchases", async (req, res) => {
 // --- 4. USER ROUTES ---
 app.post("/api/users", async (req, res) => {
   try {
-    const { username } = req.body;
-    let user = await prisma.user.findUnique({ where: { username } });
-    if (!user) user = await prisma.user.create({ data: { username } });
+    const { username, email } = req.body;
+    
+    // Safety: If only email is provided, generate a username from it
+    const effectiveEmail = email || `${username}@example.com`;
+    const effectiveUsername = username || email.split('@')[0];
+
+    let user = await prisma.user.findUnique({ where: { email: effectiveEmail } });
+    
+    if (!user) {
+      user = await prisma.user.create({ 
+        data: { 
+          username: effectiveUsername, 
+          email: effectiveEmail 
+        } 
+      });
+      console.log(`👤 New user created: ${effectiveUsername} (${effectiveEmail})`);
+    }
+    
     res.json(user);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { 
+    console.error("❌ User error:", err.message);
+    res.status(500).json({ error: err.message }); 
+  }
 });
 
 app.get("/health", (req, res) => res.json({ status: "ok", mode: "full-monolith" }));
