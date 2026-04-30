@@ -12,9 +12,9 @@ if (!REDIS_URL) {
 console.log("🔌 Connecting to Redis...");
 
 // Create Redis client for Bull
+
 const client = new Redis(REDIS_URL, {
   maxRetriesPerRequest: null,
-  enableReadyCheck: true,
   retryStrategy(times) {
     const delay = Math.min(times * 50, 2000);
     return delay;
@@ -27,7 +27,6 @@ const client = new Redis(REDIS_URL, {
 
 const subscriber = new Redis(REDIS_URL, {
   maxRetriesPerRequest: null,
-  enableReadyCheck: true,
   tls: {
     rejectUnauthorized: false,
   },
