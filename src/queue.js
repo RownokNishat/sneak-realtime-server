@@ -15,19 +15,12 @@ console.log("🔌 Connecting to Redis...");
 const redisOptions = {
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
-  enableOfflineQueue: true, // Re-enabled to prevent "Stream isn't writeable" errors
+  enableOfflineQueue: true,
+  keepAlive: 10000, // Keep the connection "warm" to prevent ECONNRESET
   tls: REDIS_URL.startsWith("rediss://") ? {} : undefined,
-  retryStrategy: (times) => {
-    // Faster retry for the first few times, then cap at 2 seconds
-    return Math.min(times * 50, 2000);
-  },
-  reconnectOnError: (err) => {
-    if (err.message.includes("READONLY")) return true;
-    return false;
-  },
+  retryStrategy: (times) => Math.min(times * 50, 2000),
 };
 
-// Create a function to provide Redis clients to Bull
 const createClient = (type) => {
   switch (type) {
     case "client":
@@ -44,25 +37,24 @@ const createClient = (type) => {
   }
 };
 
-// Create Bull queues with proper Redis configuration for Upstash
-const queueOptions = {
+const reservationQueue = new Bull("reservation-queue", {
+  createClient,
   settings: {
-    lockDuration: 60000, // 1 minute lock to prevent stalling
+    lockDuration: 60000,
     stalledInterval: 30000,
     maxStalledCount: 2,
   },
   defaultJobOptions: {
     removeOnComplete: true,
     attempts: 3,
-    backoff: {
-      type: "fixed",
-      delay: 5000,
-    },
+    backoff: { type: "fixed", delay: 5000 },
   },
-};
+});
 
-const reservationQueue = new Bull("reservation-queue", REDIS_URL, queueOptions);
-const expiryQueue = new Bull("expiry-queue", REDIS_URL, queueOptions);
+const expiryQueue = new Bull("expiry-queue", {
+  createClient,
+  defaultJobOptions: { removeOnComplete: true },
+});
 
 // Connection logging
 reservationQueue.on("error", (err) => console.error("❌ Redis Queue Error:", err));
