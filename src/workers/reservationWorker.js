@@ -30,6 +30,14 @@ reservationQueue.process("reserve", 100, async (job) => {
         });
 
         if (activeReservations > 0) {
+          // Notify user they are in a waitlist
+          const io = getIO();
+          io.emit("reservation-waiting", { 
+            userId, 
+            dropId, 
+            message: "Stock is currently held by others. Waiting for a spot to open..." 
+          });
+          
           // People are still holding items! Signal to Bull to retry LATER.
           throw new Error("WAITING_FOR_STOCK_RECOVERY");
         }
