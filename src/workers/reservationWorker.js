@@ -1,6 +1,6 @@
 const { reservationQueue, expiryQueue } = require("../queue");
-const { getIO } = require("../socketHandler");
 const prisma = require("../prismaClient");
+const { getIO } = require("../socketHandler");
 
 const RESERVATION_WINDOW_MS = 60000;
 
@@ -9,51 +9,54 @@ reservationQueue.process("reserve", 10, async (job) => {
   const { dropId, userId, timestamp } = job.data;
   console.log(`🚀 Processing reservation for user ${userId} on drop ${dropId}`);
 
+  // Fetch IO instance INSIDE the worker to avoid race conditions
+  const io = getIO();
+
   // 1. Check if the job itself is too old (e.g., if the user gave up)
   const waitedMs = Date.now() - timestamp;
   if (waitedMs > 180000) { // 3 minutes max wait time
+    console.log(`⚠️ Job for user ${userId} is too stale (${waitedMs}ms). Discarding.`);
     return { status: "stale" };
   }
 
   try {
     const result = await prisma.$transaction(async (tx) => {
+      // 2. Check stock first
       const drop = await tx.drop.findUnique({
         where: { id: dropId },
-        select: { id: true, stock: true, isActive: true, name: true, price: true },
+        select: { id: true, stock: true },
       });
 
-      if (!drop || !drop.isActive) throw new Error("DROP_UNAVAILABLE");
+      if (!drop) throw new Error("DROP_NOT_FOUND");
 
-      // LOGIC: If stock is 0, check if we should wait
       if (drop.stock <= 0) {
         const activeReservations = await tx.reservation.count({
-          where: { dropId, status: "ACTIVE", expiresAt: { gt: new Date() } }
+          where: { dropId, status: "ACTIVE", expiresAt: { gt: new Date() } },
         });
 
         if (activeReservations > 0) {
           // Notify user they are in a waitlist
-          const io = getIO();
-          io.to(`user:${userId}`).emit("reservation-waiting", { 
-            userId, 
-            dropId, 
-            message: "Stock is currently held by others. Waiting for a spot to open..." 
-          });
-          
-          // People are still holding items! Signal to Bull to retry LATER.
+          if (io) {
+            io.to(`user:${userId}`).emit("reservation-waiting", { 
+              userId, dropId, message: "Waiting for a spot to open..." 
+            });
+          }
           throw new Error("WAITING_FOR_STOCK_RECOVERY");
         }
         throw new Error("OUT_OF_STOCK");
       }
 
-      // Check for existing active reservation
+      // 3. Check for existing active reservation for THIS user
       const existing = await tx.reservation.findFirst({
         where: { userId, dropId, status: "ACTIVE", expiresAt: { gt: new Date() } },
+        include: { drop: true }
       });
+
       if (existing) {
         return { status: "already_reserved", reservation: existing };
       }
 
-      // Atomic decrement
+      // 4. Atomically decrement stock
       const updated = await tx.drop.updateMany({
         where: { id: dropId, stock: { gt: 0 } },
         data: { stock: { decrement: 1 } },
@@ -61,91 +64,83 @@ reservationQueue.process("reserve", 10, async (job) => {
 
       if (updated.count === 0) throw new Error("WAITING_FOR_STOCK_RECOVERY");
 
-      return await tx.reservation.create({
+      // 5. Create the reservation
+      const reservation = await tx.reservation.create({
         data: {
           userId,
           dropId,
+          expiresAt: new Date(Date.now() + RESERVATION_WINDOW_MS),
           status: "ACTIVE",
-          expiresAt: new Date(Date.now() + 60000),
         },
-        include: { drop: { select: { name: true, price: true } } },
+        include: { drop: true }
       });
-    }, { isolationLevel: "RepeatableRead" });
 
-    // Success logic
-    const io = getIO();
+      return reservation;
+    }, {
+      isolationLevel: "Serializable", // Strictest isolation to prevent overselling
+    });
+
+    // 6. If successful, schedule the expiry job
+    const reservationData = result.status === "already_reserved" ? result.reservation : result;
     
-    // Get latest stock for broadcast
+    if (result.status !== "already_reserved") {
+        await expiryQueue.add("check-expiry", {
+            reservationId: result.id,
+            dropId: result.dropId,
+            userId: result.userId,
+        }, {
+            delay: RESERVATION_WINDOW_MS,
+            jobId: `expiry-${result.id}`,
+            removeOnComplete: true,
+        });
+        console.log(`✅ New reservation created for user ${userId} on drop ${dropId}`);
+    }
+
+    // 7. Get final stock for broadcast
     const updatedStock = await prisma.drop.findUnique({
       where: { id: dropId },
-      select: { stock: true },
+      select: { stock: true }
     });
 
-    if (result.status !== "already_reserved") {
-      await expiryQueue.add("check-expiry", {
-        reservationId: result.id,
-        dropId: result.dropId,
-        userId: result.userId,
-      }, { delay: 60000 });
-      
-      console.log(`✅ New reservation created for user ${userId} on drop ${dropId}`);
-    } else {
-      console.log(`ℹ️ User ${userId} already had an active reservation for drop ${dropId}`);
+    // 8. Notify the specific user
+    if (io) {
+        io.to(`user:${userId}`).emit("reservation-success", { 
+            userId, 
+            dropId, 
+            reservation: {
+                id: reservationData.id,
+                expiresAt: reservationData.expiresAt,
+            }
+        });
+
+        // 9. Broadcast stock update
+        io.to(`drop:${dropId}`).emit("stock-update", {
+          dropId,
+          stock: updatedStock.stock,
+          event: "reserved",
+        });
+
+        // 10. Global broadcast
+        io.emit("global-stock-update", {
+          dropId,
+          stock: updatedStock.stock,
+        });
     }
 
-    const reservationData = result.status === "already_reserved" ? result.reservation : result;
-
-    // 1. Notify the specific user
-    io.to(`user:${userId}`).emit("reservation-success", { 
-        userId, 
-        dropId, 
-        reservation: {
-            id: reservationData.id,
-            expiresAt: reservationData.expiresAt,
-            dropName: reservationData.drop?.name || "Sneaker Drop",
-            price: reservationData.drop?.price || 0
-        },
-        message: "Reservation successful! Proceed to checkout."
-    });
-
-    // 2. Broadcast stock update to the specific drop room
-    io.to(`drop:${dropId}`).emit("stock-update", {
-      dropId,
-      stock: updatedStock.stock,
-      event: "reserved",
-    });
-
-    // 3. Global broadcast for the dashboard
-    io.emit("global-stock-update", {
-      dropId,
-      stock: updatedStock.stock,
-    });
-    
     return result;
-
   } catch (error) {
-    if (error.message === "WAITING_FOR_STOCK_RECOVERY") {
-      // Throwing this will make Bull retry based on its backoff settings
-      // This is non-blocking! The worker moves to the next job immediately.
-      throw error;
-    }
+    console.error(`❌ Reservation failed for user ${userId}:`, error.message);
     
+    if (error.message === "WAITING_FOR_STOCK_RECOVERY") {
+      throw error; // Let Bull retry
+    }
+
     const io = getIO();
-    io.to(`user:${userId}`).emit("reservation-failed", { userId, dropId, message: error.message });
+    if (io) {
+      io.to(`user:${userId}`).emit("reservation-failed", { userId, dropId, message: error.message });
+    }
     throw error;
   }
 });
 
-// Job completion event
-reservationQueue.on("completed", (job, result) => {
-  console.log(`📦 Job ${job.id} completed: reservation=${result?.id}`);
-});
-
-// Job failure event
-reservationQueue.on("failed", (job, err) => {
-  console.error(
-    `❌ Job ${job.id} failed after ${job.attemptsMade} attempts: ${err.message}`,
-  );
-});
-
-console.log("🔄 Reservation worker started");
+console.log("🔄 Reservation worker started with concurrency 10");
