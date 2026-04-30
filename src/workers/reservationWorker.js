@@ -4,186 +4,93 @@ const prisma = require("../prismaClient");
 
 const RESERVATION_WINDOW_MS = 60000;
 
-// Process reservations - ONE AT A TIME PER DROP
-reservationQueue.process("reserve", async (job) => {
+// Process reservations - Allow higher concurrency to handle bursts
+reservationQueue.process("reserve", 50, async (job) => {
   const { dropId, userId, timestamp } = job.data;
 
-  // Discard jobs that sat in the queue longer than the reservation window.
-  // Return (not throw) so Bull marks it complete and does not retry.
+  // 1. Check if the job itself is too old (e.g., if the user gave up)
   const waitedMs = Date.now() - timestamp;
-  if (waitedMs > RESERVATION_WINDOW_MS) {
-    console.log(
-      `⏭ Stale reservation job discarded (waited ${waitedMs}ms): drop=${dropId}, user=${userId}`
-    );
-    const io = getIO();
-    io.emit("reservation-failed", {
-      userId,
-      dropId,
-      message: "Your reservation request expired in the queue. Please try again.",
-    });
+  if (waitedMs > 180000) { // 3 minutes max wait time
     return { status: "stale" };
   }
 
-  console.log(`🔄 Processing reservation: drop=${dropId}, user=${userId}`);
-
   try {
     const result = await prisma.$transaction(async (tx) => {
-      // Get current drop
       const drop = await tx.drop.findUnique({
         where: { id: dropId },
-        select: {
-          id: true,
-          stock: true,
-          name: true,
-          price: true,
-          isActive: true,
-        },
+        select: { id: true, stock: true, isActive: true, name: true, price: true },
       });
 
-      if (!drop) {
-        throw new Error("DROP_NOT_FOUND");
-      }
+      if (!drop || !drop.isActive) throw new Error("DROP_UNAVAILABLE");
 
-      if (!drop.isActive) {
-        throw new Error("DROP_INACTIVE");
-      }
-
+      // LOGIC: If stock is 0, check if we should wait
       if (drop.stock <= 0) {
+        const activeReservations = await tx.reservation.count({
+          where: { dropId, status: "ACTIVE", expiresAt: { gt: new Date() } }
+        });
+
+        if (activeReservations > 0) {
+          // People are still holding items! Signal to Bull to retry LATER.
+          throw new Error("WAITING_FOR_STOCK_RECOVERY");
+        }
         throw new Error("OUT_OF_STOCK");
       }
 
-      // Check for existing active reservation (prevent double booking)
-      const existingReservation = await tx.reservation.findFirst({
-        where: {
-          userId,
-          dropId,
-          status: "ACTIVE",
-          expiresAt: { gt: new Date() },
-        },
+      // Check for existing active reservation
+      const existing = await tx.reservation.findFirst({
+        where: { userId, dropId, status: "ACTIVE", expiresAt: { gt: new Date() } },
       });
-
-      if (existingReservation) {
-        throw new Error("ALREADY_RESERVED");
+      if (existing) {
+        return { status: "already_reserved", reservation: existing };
       }
 
-      // Atomic stock decrement with safety check
-      const updatedDrop = await tx.drop.updateMany({
-        where: {
-          id: dropId,
-          stock: { gt: 0 }, // Double-check stock still available
-        },
-        data: {
-          stock: { decrement: 1 },
-        },
+      // Atomic decrement
+      const updated = await tx.drop.updateMany({
+        where: { id: dropId, stock: { gt: 0 } },
+        data: { stock: { decrement: 1 } },
       });
 
-      if (updatedDrop.count === 0) {
-        throw new Error("OUT_OF_STOCK");
-      }
+      if (updated.count === 0) throw new Error("WAITING_FOR_STOCK_RECOVERY");
 
-      // Create reservation (60 seconds from now)
-      const reservation = await tx.reservation.create({
+      return await tx.reservation.create({
         data: {
           userId,
           dropId,
           status: "ACTIVE",
           expiresAt: new Date(Date.now() + 60000),
         },
-        include: {
-          drop: {
-            select: { name: true, price: true },
-          },
-        },
+        include: { drop: { select: { name: true, price: true } } },
       });
+    }, { isolationLevel: "RepeatableRead" });
 
-      return { reservation, drop };
-    });
-
-    // Schedule expiry job for exactly 60 seconds from now
-    await expiryQueue.add(
-      "check-expiry",
-      {
-        reservationId: result.reservation.id,
-        dropId: result.reservation.dropId,
-        userId: result.reservation.userId,
-      },
-      {
-        delay: 60000, // Execute in 60 seconds
-        jobId: `expiry-${result.reservation.id}`,
-        removeOnComplete: true,
-      },
-    );
-
-    console.log(`✅ Reservation created: ${result.reservation.id}`);
-
-    // Broadcast results
-    const io = getIO();
-
-    // Get updated stock
-    const updatedStock = await prisma.drop.findUnique({
-      where: { id: dropId },
-      select: { stock: true },
-    });
-
-    // Notify specific user
-    io.emit("reservation-success", {
-      userId,
-      dropId,
-      reservation: {
-        id: result.reservation.id,
-        expiresAt: result.reservation.expiresAt,
-        dropName: result.reservation.drop.name,
-        price: result.reservation.drop.price,
-      },
-      message:
-        "Reservation successful! You have 60 seconds to complete purchase.",
-    });
-
-    // Broadcast stock update to all clients watching this drop
-    io.to(`drop:${dropId}`).emit("stock-update", {
-      dropId,
-      stock: updatedStock.stock,
-      event: "reserved",
-    });
-
-    // Global broadcast for dashboard
-    io.emit("global-stock-update", {
-      dropId,
-      stock: updatedStock.stock,
-    });
-
-    return result.reservation;
-  } catch (error) {
-    console.error(
-      `❌ Reservation failed for drop=${dropId}, user=${userId}:`,
-      error.message,
-    );
-
-    const io = getIO();
-    let message = "Reservation failed. Please try again.";
-
-    switch (error.message) {
-      case "OUT_OF_STOCK":
-        message = "Sorry, this item is sold out!";
-        break;
-      case "ALREADY_RESERVED":
-        message = "You already have an active reservation for this item.";
-        break;
-      case "DROP_NOT_FOUND":
-        message = "This drop no longer exists.";
-        break;
-      case "DROP_INACTIVE":
-        message = "This drop is no longer active.";
-        break;
+    // Success logic
+    if (result.status !== "already_reserved") {
+      await expiryQueue.add("check-expiry", {
+        reservationId: result.id,
+        dropId: result.dropId,
+        userId: result.userId,
+      }, { delay: 60000 });
     }
 
-    io.emit("reservation-failed", {
-      userId,
-      dropId,
-      message,
+    const io = getIO();
+    io.emit("reservation-success", { 
+        userId, 
+        dropId, 
+        reservation: result.status === "already_reserved" ? result.reservation : result 
     });
+    
+    return result;
 
-    throw error; // Re-throw for Bull retry mechanism
+  } catch (error) {
+    if (error.message === "WAITING_FOR_STOCK_RECOVERY") {
+      // Throwing this will make Bull retry based on its backoff settings
+      // This is non-blocking! The worker moves to the next job immediately.
+      throw error;
+    }
+    
+    const io = getIO();
+    io.emit("reservation-failed", { userId, dropId, message: error.message });
+    throw error;
   }
 });
 
