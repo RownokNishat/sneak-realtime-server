@@ -64,7 +64,6 @@ const expiryQueue = new Bull("expiry-queue", {
         return subscriber;
       default:
         return new Redis(REDIS_URL, {
-          maxRetriesPerRequest: null,
           tls: { rejectUnauthorized: false },
         });
     }
