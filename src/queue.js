@@ -1,5 +1,4 @@
 const Bull = require("bull");
-const Redis = require("ioredis");
 
 // Get Redis URL from environment
 const REDIS_URL = process.env.REDIS_URL;
@@ -11,38 +10,12 @@ if (!REDIS_URL) {
 
 console.log("🔌 Connecting to Redis...");
 
-// Create Redis client for Bull
-
-const client = new Redis(REDIS_URL, {
-  retryStrategy(times) {
-    const delay = Math.min(times * 50, 2000);
-    return delay;
-  },
-  tls: {
-    // Upstash requires TLS
-    rejectUnauthorized: false,
-  },
-});
-
-const subscriber = new Redis(REDIS_URL, {
-  tls: {
-    rejectUnauthorized: false,
-  },
-});
-
-// Create Bull queues using Upstash Redis
-const reservationQueue = new Bull("reservation-queue", {
-  createClient: (type) => {
-    switch (type) {
-      case "client":
-        return client;
-      case "subscriber":
-        return subscriber;
-      default:
-        return new Redis(REDIS_URL, {
-          tls: { rejectUnauthorized: false },
-        });
-    }
+// Create Bull queues - let Bull manage Redis connections
+// DO NOT use createClient or pre-create Redis instances
+const reservationQueue = new Bull("reservation-queue", REDIS_URL, {
+  settings: {
+    lockDuration: 30000,
+    lockRenewTime: 15000,
   },
   defaultJobOptions: {
     attempts: 3,
@@ -55,18 +28,10 @@ const reservationQueue = new Bull("reservation-queue", {
   },
 });
 
-const expiryQueue = new Bull("expiry-queue", {
-  createClient: (type) => {
-    switch (type) {
-      case "client":
-        return client;
-      case "subscriber":
-        return subscriber;
-      default:
-        return new Redis(REDIS_URL, {
-          tls: { rejectUnauthorized: false },
-        });
-    }
+const expiryQueue = new Bull("expiry-queue", REDIS_URL, {
+  settings: {
+    lockDuration: 30000,
+    lockRenewTime: 15000,
   },
   defaultJobOptions: {
     removeOnComplete: true,
@@ -75,9 +40,10 @@ const expiryQueue = new Bull("expiry-queue", {
 });
 
 // Connection events
-client.on("connect", () => console.log("✅ Redis client connected"));
-client.on("error", (err) => console.error("❌ Redis client error:", err));
-subscriber.on("connect", () => console.log("✅ Redis subscriber connected"));
+reservationQueue.on("connected", () => console.log("✅ Reservation queue connected"));
+reservationQueue.on("error", (err) => console.error("❌ Reservation queue error:", err));
+expiryQueue.on("connected", () => console.log("✅ Expiry queue connected"));
+expiryQueue.on("error", (err) => console.error("❌ Expiry queue error:", err));
 
 // Clean old jobs on startup
 async function cleanOldJobs() {
@@ -90,7 +56,8 @@ async function cleanOldJobs() {
   }
 }
 
-// Wait for Redis to be ready before cleaning
+// Wait for queues to be ready before cleaning
 setTimeout(cleanOldJobs, 5000);
 
 module.exports = { reservationQueue, expiryQueue };
+
