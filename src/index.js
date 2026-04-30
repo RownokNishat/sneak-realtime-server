@@ -20,6 +20,17 @@ require("./queue");
 require("./workers/reservationWorker");
 require("./workers/expiryWorker");
 
+const { reservationQueue, expiryQueue } = require("./queue");
+
+// GLOBAL MONITORING (This will show in your logs NO MATTER WHAT)
+reservationQueue.on('active', (job) => {
+  console.log(`🔥 QUEUE ACTIVE: Job ${job.id} is being picked up!`);
+});
+
+reservationQueue.on('failed', (job, err) => {
+  console.error(`💥 QUEUE FAILED: Job ${job.id} failed with error: ${err.message}`);
+});
+
 // --- API ROUTES ---
 app.get("/api/drops", async (req, res) => {
   try {

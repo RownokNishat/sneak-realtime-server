@@ -16,14 +16,15 @@ function initializeSocket(httpServer) {
   });
 
   io.on("connection", async (socket) => {
-    // Join a private room for targeted messages
-    const userId = socket.handshake.query.userId || socket.handshake.auth.userId;
-    if (userId) {
-      socket.join(`user:${userId}`);
-      console.log(`👤 User ${userId} joined their private room`);
-    }
-
     console.log(`🔌 Client connected: ${socket.id}`);
+
+    // Allow user to identify themselves after connection
+    socket.on("identify", (userId) => {
+      if (userId) {
+        socket.join(`user:${userId}`);
+        console.log(`👤 Socket ${socket.id} identified as user ${userId}`);
+      }
+    });
 
     // Join drop-specific room
     socket.on("join-drop", (dropId) => {
