@@ -15,13 +15,14 @@ console.log("🔌 Connecting to Redis...");
 const redisOptions = {
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
+  enableOfflineQueue: false, // Recommended for Upstash to prevent memory issues
   tls: REDIS_URL.startsWith("rediss://") ? {} : undefined,
-  retryStrategy: (times) => Math.min(times * 50, 2000),
+  retryStrategy: (times) => {
+    // Faster retry for the first few times, then cap at 2 seconds
+    return Math.min(times * 50, 2000);
+  },
   reconnectOnError: (err) => {
-    const targetError = "READONLY";
-    if (err.message.includes(targetError)) {
-      return true;
-    }
+    if (err.message.includes("READONLY")) return true;
     return false;
   },
 };
