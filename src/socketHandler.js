@@ -16,6 +16,13 @@ function initializeSocket(httpServer) {
   });
 
   io.on("connection", async (socket) => {
+    // Join a private room for targeted messages
+    const userId = socket.handshake.query.userId || socket.handshake.auth.userId;
+    if (userId) {
+      socket.join(`user:${userId}`);
+      console.log(`👤 User ${userId} joined their private room`);
+    }
+
     console.log(`🔌 Client connected: ${socket.id}`);
 
     // Join drop-specific room

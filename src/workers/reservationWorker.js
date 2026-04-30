@@ -33,7 +33,7 @@ reservationQueue.process("reserve", 10, async (job) => {
         if (activeReservations > 0) {
           // Notify user they are in a waitlist
           const io = getIO();
-          io.emit("reservation-waiting", { 
+          io.to(`user:${userId}`).emit("reservation-waiting", { 
             userId, 
             dropId, 
             message: "Stock is currently held by others. Waiting for a spot to open..." 
@@ -96,7 +96,7 @@ reservationQueue.process("reserve", 10, async (job) => {
     const reservationData = result.status === "already_reserved" ? result.reservation : result;
 
     // 1. Notify the specific user
-    io.emit("reservation-success", { 
+    io.to(`user:${userId}`).emit("reservation-success", { 
         userId, 
         dropId, 
         reservation: {
@@ -131,7 +131,7 @@ reservationQueue.process("reserve", 10, async (job) => {
     }
     
     const io = getIO();
-    io.emit("reservation-failed", { userId, dropId, message: error.message });
+    io.to(`user:${userId}`).emit("reservation-failed", { userId, dropId, message: error.message });
     throw error;
   }
 });
