@@ -2,9 +2,27 @@ const { reservationQueue, expiryQueue } = require("../queue");
 const { getIO } = require("../socketHandler");
 const prisma = require("../prismaClient");
 
+const RESERVATION_WINDOW_MS = 60000;
+
 // Process reservations - ONE AT A TIME PER DROP
 reservationQueue.process("reserve", async (job) => {
-  const { dropId, userId } = job.data;
+  const { dropId, userId, timestamp } = job.data;
+
+  // Discard jobs that sat in the queue longer than the reservation window.
+  // Return (not throw) so Bull marks it complete and does not retry.
+  const waitedMs = Date.now() - timestamp;
+  if (waitedMs > RESERVATION_WINDOW_MS) {
+    console.log(
+      `⏭ Stale reservation job discarded (waited ${waitedMs}ms): drop=${dropId}, user=${userId}`
+    );
+    const io = getIO();
+    io.emit("reservation-failed", {
+      userId,
+      dropId,
+      message: "Your reservation request expired in the queue. Please try again.",
+    });
+    return { status: "stale" };
+  }
 
   console.log(`🔄 Processing reservation: drop=${dropId}, user=${userId}`);
 
