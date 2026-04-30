@@ -46,11 +46,10 @@ const createClient = (type) => {
 
 // Create Bull queues with proper Redis configuration for Upstash
 const queueOptions = {
-  redis: REDIS_URL,
   settings: {
-    lockDuration: 30000,
+    lockDuration: 60000, // 1 minute lock to prevent stalling
     stalledInterval: 30000,
-    maxStalledCount: 1,
+    maxStalledCount: 2,
   },
   defaultJobOptions: {
     removeOnComplete: true,
@@ -62,12 +61,8 @@ const queueOptions = {
   },
 };
 
-const reservationQueue = new Bull("reservation-queue", REDIS_URL, {
-    redis: redisOptions
-});
-const expiryQueue = new Bull("expiry-queue", REDIS_URL, {
-    redis: redisOptions
-});
+const reservationQueue = new Bull("reservation-queue", REDIS_URL, queueOptions);
+const expiryQueue = new Bull("expiry-queue", REDIS_URL, queueOptions);
 
 // Connection logging
 reservationQueue.on("error", (err) => console.error("❌ Redis Queue Error:", err));
