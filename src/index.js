@@ -36,6 +36,7 @@ initializeSocket(server);
 const dropSubscriber = new Redis(process.env.REDIS_URL, {
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
+  tls: process.env.REDIS_URL.startsWith("rediss://") ? {} : undefined,
 });
 dropSubscriber.subscribe("drops:new", (err) => {
   if (err) console.error("❌ Failed to subscribe to drops:new:", err);

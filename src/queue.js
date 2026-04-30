@@ -14,7 +14,7 @@ console.log("🔌 Connecting to Redis...");
 const redisOptions = {
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
-  enableOfflineQueue: true,
+  tls: REDIS_URL.startsWith("rediss://") ? {} : undefined,
   retryStrategy: (times) => Math.min(times * 50, 2000),
   reconnectOnError: (err) => {
     const targetError = "READONLY";
@@ -25,9 +25,26 @@ const redisOptions = {
   },
 };
 
+// Create a function to provide Redis clients to Bull
+const createClient = (type) => {
+  switch (type) {
+    case "client":
+      return new Redis(REDIS_URL, redisOptions);
+    case "subscriber":
+      return new Redis(REDIS_URL, redisOptions);
+    case "bclient":
+      return new Redis(REDIS_URL, {
+        ...redisOptions,
+        maxRetriesPerRequest: null,
+      });
+    default:
+      return new Redis(REDIS_URL, redisOptions);
+  }
+};
+
 // Create Bull queues with proper Redis configuration
-const reservationQueue = new Bull("reservation-queue", REDIS_URL, {
-  ...redisOptions,
+const reservationQueue = new Bull("reservation-queue", {
+  createClient,
   settings: {
     lockDuration: 30000,
     lockRenewTime: 15000,
@@ -43,8 +60,8 @@ const reservationQueue = new Bull("reservation-queue", REDIS_URL, {
   },
 });
 
-const expiryQueue = new Bull("expiry-queue", REDIS_URL, {
-  ...redisOptions,
+const expiryQueue = new Bull("expiry-queue", {
+  createClient,
   settings: {
     lockDuration: 30000,
     lockRenewTime: 15000,
@@ -56,13 +73,13 @@ const expiryQueue = new Bull("expiry-queue", REDIS_URL, {
 });
 
 // Connection events
-reservationQueue.on("connected", () =>
-  console.log("✅ Reservation queue connected"),
+reservationQueue.on("ready", () =>
+  console.log("✅ Reservation queue ready"),
 );
 reservationQueue.on("error", (err) =>
   console.error("❌ Reservation queue error:", err),
 );
-expiryQueue.on("connected", () => console.log("✅ Expiry queue connected"));
+expiryQueue.on("ready", () => console.log("✅ Expiry queue ready"));
 expiryQueue.on("error", (err) => console.error("❌ Expiry queue error:", err));
 
 // Clean old jobs on startup
