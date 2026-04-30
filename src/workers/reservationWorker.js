@@ -64,19 +64,52 @@ reservationQueue.process("reserve", 50, async (job) => {
     }, { isolationLevel: "RepeatableRead" });
 
     // Success logic
+    const io = getIO();
+    
+    // Get latest stock for broadcast
+    const updatedStock = await prisma.drop.findUnique({
+      where: { id: dropId },
+      select: { stock: true },
+    });
+
     if (result.status !== "already_reserved") {
       await expiryQueue.add("check-expiry", {
         reservationId: result.id,
         dropId: result.dropId,
         userId: result.userId,
       }, { delay: 60000 });
+      
+      console.log(`✅ New reservation created for user ${userId} on drop ${dropId}`);
+    } else {
+      console.log(`ℹ️ User ${userId} already had an active reservation for drop ${dropId}`);
     }
 
-    const io = getIO();
+    const reservationData = result.status === "already_reserved" ? result.reservation : result;
+
+    // 1. Notify the specific user
     io.emit("reservation-success", { 
         userId, 
         dropId, 
-        reservation: result.status === "already_reserved" ? result.reservation : result 
+        reservation: {
+            id: reservationData.id,
+            expiresAt: reservationData.expiresAt,
+            dropName: reservationData.drop?.name || "Sneaker Drop",
+            price: reservationData.drop?.price || 0
+        },
+        message: "Reservation successful! Proceed to checkout."
+    });
+
+    // 2. Broadcast stock update to the specific drop room
+    io.to(`drop:${dropId}`).emit("stock-update", {
+      dropId,
+      stock: updatedStock.stock,
+      event: "reserved",
+    });
+
+    // 3. Global broadcast for the dashboard
+    io.emit("global-stock-update", {
+      dropId,
+      stock: updatedStock.stock,
     });
     
     return result;
