@@ -4,8 +4,8 @@ const { getIO } = require("../socketHandler");
 
 const RESERVATION_WINDOW_MS = 60000;
 
-// HIGH CONCURRENCY: Handle many users simultaneously
-reservationQueue.process("reserve", 50, async (job) => {
+// STABLE CONCURRENCY: 5 is the sweet spot for Upstash Free Tier
+reservationQueue.process("reserve", 5, async (job) => {
   const { dropId, userId, timestamp } = job.data;
   const io = getIO();
 

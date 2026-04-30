@@ -40,14 +40,15 @@ const createClient = (type) => {
 const reservationQueue = new Bull("reservation-queue", {
   createClient,
   settings: {
-    lockDuration: 60000,
-    stalledInterval: 30000,
-    maxStalledCount: 2,
+    lockDuration: 60000, // 1 minute
+    lockRenewTime: 15000, // Renew every 15s
+    stalledInterval: 15000, 
+    maxStalledCount: 3,
   },
   defaultJobOptions: {
     removeOnComplete: true,
-    attempts: 3,
-    backoff: { type: "fixed", delay: 5000 },
+    attempts: 10,
+    backoff: { type: "fixed", delay: 3000 },
   },
 });
 
