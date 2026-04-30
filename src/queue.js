@@ -15,7 +15,7 @@ console.log("🔌 Connecting to Redis...");
 const redisOptions = {
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
-  enableOfflineQueue: false, // Recommended for Upstash to prevent memory issues
+  enableOfflineQueue: true, // Re-enabled to prevent "Stream isn't writeable" errors
   tls: REDIS_URL.startsWith("rediss://") ? {} : undefined,
   retryStrategy: (times) => {
     // Faster retry for the first few times, then cap at 2 seconds
