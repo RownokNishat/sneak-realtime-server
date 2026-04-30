@@ -95,7 +95,35 @@ async function cleanOldJobs() {
   }
 }
 
-// Wait for queues to be ready before cleaning
-setTimeout(cleanOldJobs, 5000);
+// Proactive Stale Job Cleanup (Every 60 seconds)
+// This removes jobs from the "waiting" state if they are older than 5 minutes
+async function cleanStaleWaitingJobs() {
+  try {
+    const waitingJobs = await reservationQueue.getWaiting();
+    const now = Date.now();
+    let count = 0;
+
+    for (const job of waitingJobs) {
+      // If job is older than 5 minutes, remove it
+      if (job.data.timestamp && (now - job.data.timestamp > 300000)) {
+        await job.remove();
+        count++;
+      }
+    }
+    
+    if (count > 0) {
+      console.log(`🧹 Garbage Collector: Removed ${count} stale waiting jobs from Redis.`);
+    }
+
+    // Also clean completed/failed jobs older than 1 hour
+    await reservationQueue.clean(3600000, "completed");
+    await reservationQueue.clean(3600000, "failed");
+  } catch (error) {
+    console.error("🧹 Cleanup Error:", error);
+  }
+}
+
+// Start the garbage collector
+setInterval(cleanStaleWaitingJobs, 60000);
 
 module.exports = { reservationQueue, expiryQueue };

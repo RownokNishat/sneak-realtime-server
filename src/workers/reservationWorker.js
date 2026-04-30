@@ -4,8 +4,8 @@ const prisma = require("../prismaClient");
 
 const RESERVATION_WINDOW_MS = 60000;
 
-// Process reservations - Allow higher concurrency to handle bursts
-reservationQueue.process("reserve", 50, async (job) => {
+// Process reservations - High concurrency for massive drops
+reservationQueue.process("reserve", 100, async (job) => {
   const { dropId, userId, timestamp } = job.data;
 
   // 1. Check if the job itself is too old (e.g., if the user gave up)
