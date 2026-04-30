@@ -56,7 +56,6 @@ app.get("/api/drops/:id/stock", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-const { reservationQueue } = require("./queue");
 app.post("/api/drops/:dropId/reserve", async (req, res) => {
   try {
     const { dropId } = req.params;
