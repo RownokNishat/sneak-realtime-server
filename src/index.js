@@ -41,6 +41,17 @@ app.get("/api/drops/:id", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+app.get("/api/drops/:id/stock", async (req, res) => {
+  try {
+    const drop = await prisma.drop.findUnique({
+      where: { id: req.params.id },
+      select: { stock: true, name: true },
+    });
+    if (!drop) return res.status(404).json({ error: "Drop not found" });
+    res.json(drop);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.post("/api/drops", async (req, res) => {
   try {
     const drop = await prisma.drop.create({ data: { ...req.body, price: parseFloat(req.body.price), stock: parseInt(req.body.stock), initialStock: parseInt(req.body.stock) } });
