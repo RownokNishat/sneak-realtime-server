@@ -1,7 +1,8 @@
 require("dotenv").config();
 
 const http = require("http");
-const { initializeSocket } = require("./socketHandler");
+const Redis = require("ioredis");
+const { initializeSocket, getIO } = require("./socketHandler");
 
 // Load workers (they auto-start)
 require("./workers/reservationWorker");
@@ -30,6 +31,27 @@ const server = http.createServer((req, res) => {
 
 // Initialize Socket.io
 initializeSocket(server);
+
+// Subscribe to new-drop events published by the backend
+const dropSubscriber = new Redis(process.env.REDIS_URL, {
+  maxRetriesPerRequest: null,
+  enableReadyCheck: false,
+});
+dropSubscriber.subscribe("drops:new", (err) => {
+  if (err) console.error("❌ Failed to subscribe to drops:new:", err);
+  else console.log("✅ Subscribed to drops:new channel");
+});
+dropSubscriber.on("message", (channel, message) => {
+  if (channel === "drops:new") {
+    try {
+      const drop = JSON.parse(message);
+      getIO().emit("new-drop", drop);
+      console.log(`📦 Broadcasted new drop: ${drop.id}`);
+    } catch (err) {
+      console.error("Failed to broadcast new drop:", err);
+    }
+  }
+});
 
 const PORT = process.env.PORT || 4000;
 
