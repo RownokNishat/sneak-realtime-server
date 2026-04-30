@@ -44,43 +44,41 @@ const createClient = (type) => {
   }
 };
 
-// Create Bull queues with proper Redis configuration
-const reservationQueue = new Bull("reservation-queue", {
-  createClient,
+// Create Bull queues with proper Redis configuration for Upstash
+const queueOptions = {
+  redis: REDIS_URL,
   settings: {
     lockDuration: 30000,
-    lockRenewTime: 15000,
-  },
-  defaultJobOptions: {
-    attempts: 3,
-    backoff: {
-      type: "exponential",
-      delay: 2000,
-    },
-    removeOnComplete: 100,
-    removeOnFail: 100,
-  },
-});
-
-const expiryQueue = new Bull("expiry-queue", {
-  createClient,
-  settings: {
-    lockDuration: 30000,
-    lockRenewTime: 15000,
+    stalledInterval: 30000,
+    maxStalledCount: 1,
   },
   defaultJobOptions: {
     removeOnComplete: true,
-    removeOnFail: true,
+    attempts: 3,
+    backoff: {
+      type: "fixed",
+      delay: 5000,
+    },
   },
+};
+
+const reservationQueue = new Bull("reservation-queue", REDIS_URL, {
+    redis: redisOptions
+});
+const expiryQueue = new Bull("expiry-queue", REDIS_URL, {
+    redis: redisOptions
 });
 
-// Connection events
-reservationQueue.on("ready", () =>
-  console.log("✅ Reservation queue ready"),
-);
-reservationQueue.on("error", (err) =>
-  console.error("❌ Reservation queue error:", err),
-);
+// Connection logging
+reservationQueue.on("error", (err) => console.error("❌ Redis Queue Error:", err));
+reservationQueue.on("ready", () => console.log("✅ Successfully connected to Redis & Queue is Ready!"));
+
+// Heartbeat to keep the connection alive on Render
+setInterval(() => {
+    if (reservationQueue.client.status === "ready") {
+        console.log("💓 Worker Heartbeat: I am alive and listening to Redis...");
+    }
+}, 15000);
 expiryQueue.on("ready", () => console.log("✅ Expiry queue ready"));
 expiryQueue.on("error", (err) => console.error("❌ Expiry queue error:", err));
 
