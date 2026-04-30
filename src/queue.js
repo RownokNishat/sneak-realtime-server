@@ -1,4 +1,5 @@
 const Bull = require("bull");
+const Redis = require("ioredis");
 
 // Get Redis URL from environment
 const REDIS_URL = process.env.REDIS_URL;
