@@ -39,6 +39,14 @@ app.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+app.get('/', (req, res) => {
+    res.json({ 
+        message: 'Sneaker Drop API is running', 
+        version: '1.0.0',
+        health: '/health'
+    });
+});
+
 // Error Handling
 app.use(notFound);
 app.use(errorHandler);
