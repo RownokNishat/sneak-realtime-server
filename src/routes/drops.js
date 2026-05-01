@@ -43,11 +43,22 @@ router.post('/', async (req, res) => {
                 totalStock: parseInt(totalStock),
                 availableStock: parseInt(totalStock),
                 startsAt: startsAt ? new Date(startsAt) : new Date(),
-                imageUrl
+                imageUrl,
+                isActive: true
             },
         });
+
+        // BROADCAST the new drop to all connected clients
+        // We fetch it again to ensure we have the format with recentPurchasers (empty)
+        const dropWithFeed = {
+            ...drop,
+            recentPurchasers: []
+        };
+        req.io.emit('newDrop', dropWithFeed);
+
         res.status(201).json(drop);
     } catch (error) {
+        console.error("Drop creation error:", error);
         res.status(400).json({ error: error.message });
     }
 });
