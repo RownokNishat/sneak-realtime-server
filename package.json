@@ -4,8 +4,8 @@
   "description": "Minimalistic Real-time server for Sneaker Drop",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "nodemon src/index.js",
+    "start": "node init && node src/index.js",
+    "dev": "node init && nodemon src/index.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "seed": "node prisma/seed.js"
@@ -13,7 +13,6 @@
   "dependencies": {
     "@prisma/client": "^5.10.2",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
     "express": "^4.18.3",
     "socket.io": "^4.7.4",
     "uuid": "^9.0.1"
