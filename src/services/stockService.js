@@ -9,63 +9,64 @@ function startStockRecovery(io) {
         try {
             const now = new Date();
             
-            // 1. Find all active reservations that have passed their expiry time
-            const expiredReservations = await prisma.reservation.findMany({
-                where: {
-                    status: 'ACTIVE',
-                    expiresAt: { lt: now },
-                },
-                select: { id: true, dropId: true }
-            });
+            // 1. Process EVERYTHING in one atomic transaction to prevent "missing" a drop
+            await prisma.$transaction(async (tx) => {
+                // Find all active reservations that have expired
+                const expiredReservations = await tx.reservation.findMany({
+                    where: {
+                        status: 'ACTIVE',
+                        expiresAt: { lt: now },
+                    }
+                });
 
-            if (expiredReservations.length === 0) return;
+                if (expiredReservations.length === 0) return;
 
-            console.log(`⏰ Found ${expiredReservations.length} expired reservations. Recovering stock...`);
+                console.log(`⏰ [RECOVERY] Processing ${expiredReservations.length} total expired reservations...`);
 
-            // 2. Group by dropId to minimize database calls and broadcast accurately
-            const dropsToUpdate = [...new Set(expiredReservations.map(r => r.dropId))];
+                // Group by dropId to handle multiple different products at once
+                const dropIds = [...new Set(expiredReservations.map(r => r.dropId))];
 
-            for (const dropId of dropsToUpdate) {
-                // Get all reservation IDs for THIS drop that need expiring
-                const resIds = expiredReservations
-                    .filter(r => r.dropId === dropId)
-                    .map(r => r.id);
+                for (const dropId of dropIds) {
+                    const resIdsForThisDrop = expiredReservations
+                        .filter(r => r.dropId === dropId)
+                        .map(r => r.id);
 
-                try {
-                    await prisma.$transaction(async (tx) => {
-                        // Mark them as EXPIRED atomically
-                        const updateRes = await tx.reservation.updateMany({
-                            where: {
-                                id: { in: resIds },
-                                status: 'ACTIVE'
-                            },
-                            data: { status: 'EXPIRED' }
+                    // Mark as EXPIRED atomically within this drop's scope
+                    const updateRes = await tx.reservation.updateMany({
+                        where: {
+                            id: { in: resIdsForThisDrop },
+                            status: 'ACTIVE'
+                        },
+                        data: { status: 'EXPIRED' }
+                    });
+
+                    // If we successfully expired some, restore the stock for THIS drop
+                    if (updateRes.count > 0) {
+                        const updatedDrop = await tx.drop.update({
+                            where: { id: dropId },
+                            data: { availableStock: { increment: updateRes.count } }
                         });
 
-                        // Only restore stock for the number of reservations successfully marked as EXPIRED
-                        if (updateRes.count > 0) {
-                            const updatedDrop = await tx.drop.update({
-                                where: { id: dropId },
-                                data: { 
-                                    availableStock: { increment: updateRes.count } 
-                                }
-                            });
+                        console.log(`✅ [RESTORED] ${updateRes.count} units to ${updatedDrop.name}. New Stock: ${updatedDrop.availableStock}`);
 
-                            console.log(`✅ Restored ${updateRes.count} units to Drop: ${dropId}. New stock: ${updatedDrop.availableStock}`);
-
-                            // Broadcast the new "Truth" to all clients
-                            io.emit('stockUpdate', {
-                                dropId,
-                                availableStock: updatedDrop.availableStock,
-                            });
-                        }
-                    });
-                } catch (txError) {
-                    console.error(`❌ Transaction failed for drop ${dropId}:`, txError);
+                        // Broadcast update to all clients
+                        io.emit('stockUpdate', {
+                            dropId: dropId,
+                            availableStock: updatedDrop.availableStock,
+                        });
+                    }
                 }
-            }
+            }, {
+                // Serializable isolation prevents any other process from reading these rows while we update them
+                isolationLevel: 'Serializable'
+            });
+
         } catch (error) {
-            console.error('❌ Error in stock recovery service:', error);
+            // P2034 is a database write conflict error. This is normal and safe in a distributed system
+            // as it means another tick or another process already handled the restoration.
+            if (error.code !== 'P2034') {
+                console.error('❌ Stock recovery service error:', error);
+            }
         }
     }, EXPIRY_CHECK_INTERVAL);
 }
