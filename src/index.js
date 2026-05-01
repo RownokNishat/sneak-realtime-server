@@ -1,159 +1,50 @@
-const express = require("express");
-const http = require("http");
-const cors = require("cors");
-require("dotenv").config();
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
+require('dotenv').config();
 
-const { initializeSocket, getIO } = require("./socketHandler");
-const prisma = require("./prismaClient");
+const { startStockRecovery } = require('./services/stockService');
 
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: {
+        origin: "*", 
+        methods: ["GET", "POST"]
+    }
+});
+
 app.use(cors());
 app.use(express.json());
 
-const server = http.createServer(app);
-
-// 1. INITIALIZE SOCKET FIRST
-initializeSocket(server);
-
-// 2. NOW START WORKERS & QUEUES
-const { reservationQueue, expiryQueue } = require("./queue");
-require("./workers/reservationWorker");
-require("./workers/expiryWorker");
-
-// GLOBAL MONITORING
-reservationQueue.on('active', (job) => {
-  console.log(`🔥 QUEUE ACTIVE: Job ${job.id} is being picked up!`);
+// Detailed Request Logging
+app.use((req, res, next) => {
+  console.log(`[API] ${req.method} ${req.path}`);
+  next();
 });
 
-// --- 1. DROP ROUTES ---
-app.get("/api/drops", async (req, res) => {
-  try {
-    const drops = await prisma.drop.findMany({
-      where: { isActive: true },
-      include: {
-        purchases: { take: 3, orderBy: { createdAt: "desc" }, include: { user: { select: { username: true } } } },
-      },
-      orderBy: { createdAt: "desc" },
-    });
-    res.json(drops);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+// Pass io to request object
+app.use((req, res, next) => {
+    req.io = io;
+    next();
 });
 
-app.get("/api/drops/:id", async (req, res) => {
-  try {
-    const drop = await prisma.drop.findUnique({
-      where: { id: req.params.id },
-      include: { purchases: { take: 10, include: { user: { select: { username: true } } } } }
-    });
-    res.json(drop);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+// Routes
+app.use('/api/drops', require('./routes/drops'));
+app.use('/api/reservations', require('./routes/reservations'));
+app.use('/api/purchases', require('./routes/purchases'));
+app.use('/api/users', require('./routes/users'));
+
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-app.get("/api/drops/:id/stock", async (req, res) => {
-  try {
-    const drop = await prisma.drop.findUnique({ where: { id: req.params.id }, select: { stock: true, name: true } });
-    if (!drop) return res.status(404).json({ error: "Not found" });
-    res.json(drop);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.post("/api/drops", async (req, res) => {
-  try {
-    const drop = await prisma.drop.create({ 
-      data: { ...req.body, price: parseFloat(req.body.price), stock: parseInt(req.body.stock), initialStock: parseInt(req.body.stock) } 
-    });
-    res.status(201).json(drop);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// --- 2. RESERVATION ROUTES ---
-app.post("/api/drops/:dropId/reserve", async (req, res) => {
-  try {
-    const { dropId } = req.params;
-    const userId = req.headers["x-user-id"];
-    const job = await reservationQueue.add("reserve", 
-      { dropId, userId, timestamp: Date.now() },
-      { jobId: `reserve-${dropId}-${userId}-${Date.now()}`, removeOnComplete: true }
-    );
-    res.json({ status: "queued", jobId: job.id });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.get("/api/users/:userId/reservations", async (req, res) => {
-  try {
-    const resv = await prisma.reservation.findMany({
-      where: { userId: req.params.userId, status: "ACTIVE", expiresAt: { gt: new Date() } },
-      include: { drop: true }
-    });
-    res.json(resv);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// --- 3. PURCHASE ROUTES ---
-app.post("/api/drops/:dropId/purchase", async (req, res) => {
-  try {
-    const { reservationId, userId } = req.body;
-    const result = await prisma.$transaction(async (tx) => {
-      await tx.reservation.update({ where: { id: reservationId }, data: { status: "COMPLETED" } });
-      const purchase = await tx.purchase.create({
-        data: { userId, dropId: req.params.dropId, reservationId },
-        include: { user: { select: { username: true } }, drop: true }
-      });
-      return purchase;
-    });
-
-    const io = getIO();
-    if (io) {
-      io.emit("new-purchase", { dropId: req.params.dropId, purchase: result });
-      io.emit("global-stock-update", { dropId: req.params.dropId, stock: result.drop.stock });
-    }
-    res.json(result);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.get("/api/drops/:dropId/purchases", async (req, res) => {
-  try {
-    const p = await prisma.purchase.findMany({
-      where: { dropId: req.params.dropId },
-      take: 10,
-      orderBy: { createdAt: "desc" },
-      include: { user: { select: { username: true } } }
-    });
-    res.json(p);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// --- 4. USER ROUTES ---
-app.post("/api/users", async (req, res) => {
-  try {
-    const { username, email } = req.body;
-    
-    // Safety: If only email is provided, generate a username from it
-    const effectiveEmail = email || `${username}@example.com`;
-    const effectiveUsername = username || email.split('@')[0];
-
-    let user = await prisma.user.findUnique({ where: { email: effectiveEmail } });
-    
-    if (!user) {
-      user = await prisma.user.create({ 
-        data: { 
-          username: effectiveUsername, 
-          email: effectiveEmail 
-        } 
-      });
-      console.log(`👤 New user created: ${effectiveUsername} (${effectiveEmail})`);
-    }
-    
-    res.json(user);
-  } catch (err) { 
-    console.error("❌ User error:", err.message);
-    res.status(500).json({ error: err.message }); 
-  }
-});
-
-app.get("/health", (req, res) => res.json({ status: "ok", mode: "full-monolith" }));
+// Start Stock Recovery
+startStockRecovery(io);
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
-  console.log(`🚀 MONOLITH SERVER RUNNING ON PORT ${PORT}`);
+    console.log(`🚀 Real-time Server running on port ${PORT}`);
+    console.log(`✅ Socket.io initialized`);
 });
