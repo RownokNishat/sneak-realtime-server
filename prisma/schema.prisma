@@ -17,24 +17,23 @@ model User {
 }
 
 model Drop {
-    id           String        @id @default(uuid())
-    name         String
-    description  String?
-    price        Float
-    imageUrl     String?
-    stock        Int
-    initialStock Int
-    startTime    DateTime      @default(now())
-    endTime      DateTime?
-    isActive     Boolean       @default(true)
-    createdAt    DateTime      @default(now())
-    reservations Reservation[]
-    purchases    Purchase[]
+    id             String        @id @default(uuid())
+    name           String
+    description    String?
+    price          Float
+    imageUrl       String?
+    availableStock Int           // Live stock count (decremented on reservation)
+    totalStock     Int           // Original stock count
+    startsAt       DateTime      @default(now())
+    isActive       Boolean       @default(true)
+    createdAt      DateTime      @default(now())
+    reservations   Reservation[]
+    purchases      Purchase[]
 }
 
 model Reservation {
     id        String    @id @default(uuid())
-    status    String    @default("ACTIVE") // ACTIVE, COMPLETED, EXPIRED, CANCELLED
+    status    String    @default("ACTIVE") // ACTIVE, COMPLETED, EXPIRED
     expiresAt DateTime
     createdAt DateTime  @default(now())
     userId    String
