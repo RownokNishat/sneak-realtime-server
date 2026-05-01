@@ -4,7 +4,7 @@ const EXPIRY_CHECK_INTERVAL = 3000;
 
 function startStockRecovery(io) {
     console.log('Stock recovery service started');
-    
+
     setInterval(async () => {
         try {
             const now = new Date();
