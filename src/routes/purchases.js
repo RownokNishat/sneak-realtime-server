@@ -1,8 +1,8 @@
 const express = require('express');
-const router = express.Router();
+const router = require('express').Router();
 const prisma = require('../lib/prisma');
 
-// Complete Purchase Flow
+// Complete Purchase Flow with Grace Period
 router.post('/', async (req, res) => {
     const { userId, dropId, reservationId } = req.body;
 
@@ -12,19 +12,20 @@ router.post('/', async (req, res) => {
 
     try {
         const purchase = await prisma.$transaction(async (tx) => {
-            // 1. Verify reservation
+            // 1. Verify reservation with a 2-second grace period
+            // This handles network latency and prevents "failed at the last millisecond" errors
             const reservation = await tx.reservation.findUnique({
                 where: { 
                     id: reservationId,
                     userId,
                     dropId,
                     status: 'ACTIVE',
-                    expiresAt: { gt: new Date() }
+                    expiresAt: { gt: new Date(Date.now() - 2000) } // 2s Grace Period
                 },
             });
 
             if (!reservation) {
-                throw new Error('NO_ACTIVE_RESERVATION_OR_EXPIRED');
+                throw new Error('RESERVATION_EXPIRED_OR_INVALID');
             }
 
             // 2. Mark reservation completed
@@ -35,8 +36,14 @@ router.post('/', async (req, res) => {
 
             // 3. Record purchase
             const newPurchase = await tx.purchase.create({
-                data: { userId, dropId, reservationId },
-                include: { user: { select: { username: true } } }
+                data: { 
+                    userId, 
+                    dropId, 
+                    reservationId 
+                },
+                include: { 
+                    user: { select: { username: true } } 
+                }
             });
 
             return newPurchase;
@@ -51,7 +58,10 @@ router.post('/', async (req, res) => {
         res.status(201).json(purchase);
     } catch (error) {
         console.error("Purchase Error:", error.message);
-        res.status(400).json({ error: error.message });
+        
+        // If it was an expiration, we want the frontend to know specifically
+        const statusCode = error.message === 'RESERVATION_EXPIRED_OR_INVALID' ? 410 : 400;
+        res.status(statusCode).json({ error: error.message });
     }
 });
 
