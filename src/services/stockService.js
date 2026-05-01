@@ -9,43 +9,60 @@ function startStockRecovery(io) {
         try {
             const now = new Date();
             
-            // Find all active reservations that have expired
+            // 1. Find all active reservations that have passed their expiry time
             const expiredReservations = await prisma.reservation.findMany({
                 where: {
                     status: 'ACTIVE',
                     expiresAt: { lt: now },
                 },
+                select: { id: true, dropId: true }
             });
 
             if (expiredReservations.length === 0) return;
 
-            console.log(`⏰ Found ${expiredReservations.length} expired reservations`);
+            console.log(`⏰ Found ${expiredReservations.length} expired reservations. Recovering stock...`);
 
-            for (const res of expiredReservations) {
-                // Use a transaction to mark expired and restore stock atomically
-                await prisma.$transaction(async (tx) => {
-                    // Mark this specific reservation as EXPIRED only if still ACTIVE
-                    const updateRes = await tx.reservation.updateMany({
-                        where: { id: res.id, status: 'ACTIVE' },
-                        data: { status: 'EXPIRED' },
+            // 2. Group by dropId to minimize database calls and broadcast accurately
+            const dropsToUpdate = [...new Set(expiredReservations.map(r => r.dropId))];
+
+            for (const dropId of dropsToUpdate) {
+                // Get all reservation IDs for THIS drop that need expiring
+                const resIds = expiredReservations
+                    .filter(r => r.dropId === dropId)
+                    .map(r => r.id);
+
+                try {
+                    await prisma.$transaction(async (tx) => {
+                        // Mark them as EXPIRED atomically
+                        const updateRes = await tx.reservation.updateMany({
+                            where: {
+                                id: { in: resIds },
+                                status: 'ACTIVE'
+                            },
+                            data: { status: 'EXPIRED' }
+                        });
+
+                        // Only restore stock for the number of reservations successfully marked as EXPIRED
+                        if (updateRes.count > 0) {
+                            const updatedDrop = await tx.drop.update({
+                                where: { id: dropId },
+                                data: { 
+                                    availableStock: { increment: updateRes.count } 
+                                }
+                            });
+
+                            console.log(`✅ Restored ${updateRes.count} units to Drop: ${dropId}. New stock: ${updatedDrop.availableStock}`);
+
+                            // Broadcast the new "Truth" to all clients
+                            io.emit('stockUpdate', {
+                                dropId,
+                                availableStock: updatedDrop.availableStock,
+                            });
+                        }
                     });
-
-                    if (updateRes.count > 0) {
-                        // Restore the stock
-                        const updatedDrop = await tx.drop.update({
-                            where: { id: res.dropId },
-                            data: { availableStock: { increment: 1 } },
-                        });
-
-                        console.log(`✅ Restored 1 unit to Drop: ${res.dropId}. New stock: ${updatedDrop.availableStock}`);
-
-                        // Notify all clients about the stock change
-                        io.emit('stockUpdate', {
-                            dropId: res.dropId,
-                            availableStock: updatedDrop.availableStock,
-                        });
-                    }
-                });
+                } catch (txError) {
+                    console.error(`❌ Transaction failed for drop ${dropId}:`, txError);
+                }
             }
         } catch (error) {
             console.error('❌ Error in stock recovery service:', error);
