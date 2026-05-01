@@ -2,15 +2,27 @@ const express = require('express');
 const router = express.Router();
 const prisma = require('../lib/prisma');
 
-// Create user (for demo)
-router.post('/register', async (req, res) => {
+// Create user (handles both / and /register)
+router.post(['/', '/register'], async (req, res) => {
     const { username, email } = req.body;
+    
+    if (!username) {
+        return res.status(400).json({ error: "Username is required" });
+    }
+
     try {
-        const user = await prisma.user.create({
-            data: { username, email }
+        // Upsert user: find by username, update nothing, or create new
+        const user = await prisma.user.upsert({
+            where: { username },
+            update: {}, // No updates if user exists
+            create: {
+                username,
+                email: email || `${username}@example.com`
+            }
         });
         res.status(201).json(user);
     } catch (error) {
+        console.error("User registration error:", error);
         res.status(400).json({ error: error.message });
     }
 });

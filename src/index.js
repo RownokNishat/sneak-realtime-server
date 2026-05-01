@@ -4,6 +4,7 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 require('dotenv').config();
 
+const prisma = require('./lib/prisma');
 const { startStockRecovery } = require('./services/stockService');
 
 const app = express();
@@ -38,6 +39,20 @@ app.use('/api/users', require('./routes/users'));
 
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Database Connection Check
+prisma.$connect()
+    .then(() => console.log('✅ Database connected successfully'))
+    .catch((err) => console.error('❌ Database connection failed:', err));
+
+// Global Error Handler
+app.use((err, req, res, next) => {
+    console.error('💥 SERVER ERROR:', err.stack);
+    res.status(500).json({ 
+        error: 'Internal Server Error', 
+        details: err.message 
+    });
 });
 
 // Start Stock Recovery
