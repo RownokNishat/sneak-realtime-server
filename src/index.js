@@ -6,26 +6,24 @@ require('dotenv').config();
 
 const prisma = require('./lib/prisma');
 const { startStockRecovery } = require('./services/stockService');
+const { requestLogger } = require('./middlewares/logger');
+const { errorHandler, notFound } = require('./middlewares/errorHandler');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: {
-        origin: "*", 
+        origin: "*",
         methods: ["GET", "POST"]
     }
 });
 
+// Middlewares
 app.use(cors());
 app.use(express.json());
+app.use(requestLogger);
 
-// Detailed Request Logging
-app.use((req, res, next) => {
-  console.log(`[API] ${req.method} ${req.path}`);
-  next();
-});
-
-// Pass io to request object
+// Pass io to request object (Dependency Injection)
 app.use((req, res, next) => {
     req.io = io;
     next();
@@ -41,25 +39,23 @@ app.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Error Handling
+app.use(notFound);
+app.use(errorHandler);
+
 // Database Connection Check
 prisma.$connect()
-    .then(() => console.log('✅ Database connected successfully'))
-    .catch((err) => console.error('❌ Database connection failed:', err));
-
-// Global Error Handler
-app.use((err, req, res, next) => {
-    console.error('💥 SERVER ERROR:', err.stack);
-    res.status(500).json({ 
-        error: 'Internal Server Error', 
-        details: err.message 
+    .then(() => console.log('Database connected successfully'))
+    .catch((err) => {
+        console.error('Database connection failed:', err);
+        process.exit(1);
     });
-});
 
-// Start Stock Recovery
+// Start Background Services
 startStockRecovery(io);
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
-    console.log(`🚀 Real-time Server running on port ${PORT}`);
-    console.log(`✅ Socket.io initialized`);
+    console.log(`Real-time Server running on port ${PORT}`);
+    console.log(`Socket.io initialized`);
 });
