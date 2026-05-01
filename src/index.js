@@ -18,18 +18,15 @@ const io = new Server(server, {
     }
 });
 
-// Middlewares
 app.use(cors());
 app.use(express.json());
 app.use(requestLogger);
 
-// Pass io to request object (Dependency Injection)
 app.use((req, res, next) => {
     req.io = io;
     next();
 });
 
-// Routes
 app.use('/api/drops', require('./routes/drops'));
 app.use('/api/reservations', require('./routes/reservations'));
 app.use('/api/purchases', require('./routes/purchases'));
@@ -41,29 +38,24 @@ app.get('/health', (req, res) => {
 
 app.get('/', (req, res) => {
     res.json({ 
-        message: 'Sneaker Drop API is running', 
-        version: '1.0.0',
-        health: '/health'
+        message: 'Sneaker Drop API', 
+        version: '1.0.0'
     });
 });
 
-// Error Handling
 app.use(notFound);
 app.use(errorHandler);
 
-// Database Connection Check
 prisma.$connect()
-    .then(() => console.log('Database connected successfully'))
+    .then(() => console.log('Database connected'))
     .catch((err) => {
         console.error('Database connection failed:', err);
         process.exit(1);
     });
 
-// Start Background Services
 startStockRecovery(io);
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
-    console.log(`Real-time Server running on port ${PORT}`);
-    console.log(`Socket.io initialized`);
+    console.log(`Server running on port ${PORT}`);
 });
